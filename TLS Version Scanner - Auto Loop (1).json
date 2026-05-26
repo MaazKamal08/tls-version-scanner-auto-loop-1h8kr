@@ -1,0 +1,298 @@
+{
+  "name": "TLS Version Scanner - Auto Loop",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "231375c9-ba50-48df-8e71-2bb3454539fa",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2800,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1xR9eC9-0QtWOFQOuA9dXRVXBxK1w_EEBfOEk63XXl2o",
+          "mode": "list",
+          "cachedResultName": "n8ntest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1xR9eC9-0QtWOFQOuA9dXRVXBxK1w_EEBfOEk63XXl2o/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 297856582,
+          "mode": "list",
+          "cachedResultName": "Sheet3",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1xR9eC9-0QtWOFQOuA9dXRVXBxK1w_EEBfOEk63XXl2o/edit#gid=297856582"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -2576,
+        -32
+      ],
+      "id": "4c4bcd2d-3f58-49bb-9454-6dc61515dab4",
+      "name": "Get IPs from Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "wHF186lfpWWpvdSz",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nconst toScan = items.filter(item => {\n  const tls = item.json['TLS Versions'];\n  return !tls || \n         tls.toString().trim() === '' || \n         tls.toString().trim().toLowerCase() === 'empty';\n});\n\nconsole.log(`Total IPs: ${items.length}, To scan: ${toScan.length}`);\n\nif (toScan.length === 0) {\n  return [{ json: { skip: true, ip: '', row_number: 0, message: 'All IPs already have TLS data' } }];\n}\n\nreturn toScan.map(item => ({\n  json: {\n    skip: false,\n    ip: item.json['IPs'].toString().trim(),\n    row_number: item.json['row_number']\n  }\n}));"
+      },
+      "id": "97b63288-3ef1-4890-829d-d8017ecab2bf",
+      "name": "Filter Unscanned IPs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2352,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a263a95f-bb40-476b-b610-a13a7e79e203",
+      "name": "Has IPs to Scan?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2144,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=IP=\"{{ $json.ip }}\"\necho \"Scanning: $IP\"\n\n# Step 1: nmap se port 443 check karo\nPORT_STATUS=$(nmap -sT -Pn -p 443 \"$IP\" 2>/dev/null | grep '443/tcp' | awk '{print $2}')\necho \"Port 443 status: $PORT_STATUS\"\n\n# Step 2: Port open hai toh curl se TLS nikalo\nif [ \"$PORT_STATUS\" = \"open\" ]; then\n  RESULT=$(curl -vI --connect-timeout 15 --max-time 20 \"https://$IP\" 2>&1)\n  \n  CONN_LINE=$(echo \"$RESULT\" | grep 'SSL connection using')\n  \n  if [ -n \"$CONN_LINE\" ]; then\n    TLS_VER=$(echo \"$CONN_LINE\" | grep -oE 'TLSv[0-9.]+')\n    CIPHER=$(echo \"$CONN_LINE\" | awk -F'/' '{print $2}' | xargs)\n    TLS=\"$TLS_VER / $CIPHER\"\n  elif echo \"$RESULT\" | grep -qE 'TLSv[0-9.]+'; then\n    TLS_VER=$(echo \"$RESULT\" | grep -oE 'TLSv[0-9.]+' | sort -u | tr '\\n' ',' | sed 's/,$//')\n    TLS=\"$TLS_VER (cert error - TLS active)\"\n  else\n    TLS=\"Port open but no TLS detected\"\n  fi\n\nelif [ \"$PORT_STATUS\" = \"filtered\" ]; then\n  TLS=\"Port 443 filtered (firewall)\"\n\nelif [ \"$PORT_STATUS\" = \"closed\" ]; then\n  TLS=\"Port 443 closed\"\n\nelse\n  TLS=\"Host unreachable\"\nfi\n\necho \"TLS_RESULT:$TLS\"\necho \"IP_SCANNED:$IP\""
+      },
+      "id": "5ce09376-c0cd-44b7-80bb-c922de99f565",
+      "name": "Run TLS Scan",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        -1920,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst stdout = item.json.stdout || '';\n\nconst tlsMatch = stdout.match(/TLS_RESULT:(.+)/);\nconst ipMatch = stdout.match(/IP_SCANNED:(.+)/);\n\nconst tls = tlsMatch ? tlsMatch[1].trim() : 'Scan failed';\nconst ip = ipMatch ? ipMatch[1].trim() : '';\nconst rowNumber = $('Filter Unscanned IPs').item.json.row_number;\n\nreturn [{\n  json: {\n    ip,\n    tls_versions: tls,\n    row_number: rowNumber\n  }\n}];"
+      },
+      "id": "037d932b-4f02-47c7-902c-6ef8f7cf1631",
+      "name": "Parse TLS Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1xR9eC9-0QtWOFQOuA9dXRVXBxK1w_EEBfOEk63XXl2o",
+          "mode": "list",
+          "cachedResultName": "n8ntest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1xR9eC9-0QtWOFQOuA9dXRVXBxK1w_EEBfOEk63XXl2o/edit#gid=297856582"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 297856582,
+          "mode": "list",
+          "cachedResultName": "Sheet3",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1xR9eC9-0QtWOFQOuA9dXRVXBxK1w_EEBfOEk63XXl2o/edit#gid=297856582"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "IPs": "={{ $json.ip }}",
+            "TLS Versions": "={{ $json.tls_versions }}"
+          },
+          "matchingColumns": [
+            "IPs"
+          ],
+          "schema": [
+            {
+              "id": "IPs",
+              "displayName": "IPs",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "TLS Versions",
+              "displayName": "TLS Versions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1440,
+        -112
+      ],
+      "id": "72a7aac2-0809-4900-8370-ebc323770ffa",
+      "name": "Update TLS in Sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "wHF186lfpWWpvdSz",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { message: 'All IPs already scanned. Nothing to do.', timestamp: new Date().toISOString() } }];"
+      },
+      "id": "be1df34c-acdf-40d2-9492-4571d39cf919",
+      "name": "All Done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1920,
+        96
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get IPs from Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get IPs from Sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter Unscanned IPs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Unscanned IPs": {
+      "main": [
+        [
+          {
+            "node": "Has IPs to Scan?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has IPs to Scan?": {
+      "main": [
+        [
+          {
+            "node": "Run TLS Scan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run TLS Scan": {
+      "main": [
+        [
+          {
+            "node": "Parse TLS Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse TLS Result": {
+      "main": [
+        [
+          {
+            "node": "Update TLS in Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "99168982-2e1c-4655-8735-c766d68203ea",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "3127e0702a73301f3dd2c5019e9732e437e6d3bef84a4f13fdb7f52d826473ea"
+  },
+  "id": "I34FoYdln9WL8D3w",
+  "tags": []
+}
